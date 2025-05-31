@@ -24,6 +24,7 @@ fps = 0 # 計算得到的 FPS 值
 face_id = f"face_{len(face_tracking) + len(used_ids)}_{detected_face['center'][0]}_{detected_face['center'][1]}"
 """
 
+# 用來記錄每個人目前的 display_id
 display_id = {}
 next_display_id = {} # 未來的 display_id
 
@@ -86,10 +87,17 @@ def update_fps():
         frame_count = 0 # 重置影格計數器 frame_count 為 0，為下一個計算週期做準備
         fps_start_time = time.time() # 重置 fps_start_time 為當前時間
 
+def GaussianAndEq(image, ksize=(5, 5), sigmaX=0):
+    """對影像進行高斯模糊處理"""
+    G=cv2.GaussianBlur(image, ksize, sigmaX)
+    yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
+    yuv[:, :, 0] = cv2.equalizeHist(yuv[:, :, 0]) # 對 Y 通道進行直方圖均衡化
+    G=cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR) # 將均衡化後的影像轉回 BGR 色彩空間
+    return G # 返回處理後的影像
 
 def main():
     global frame_count, recent_suspects
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture("1.mp4")
     if not cap.isOpened():
         print("無法開啟攝影機")
         return
@@ -101,8 +109,10 @@ def main():
         got_damm, frame = cap.read() 
         # got_damm : 有 True，搖頭 False
         # frame : 影像
+        if frame is not None:
+            frame = GaussianAndEq(frame)
         if not got_damm:
-            print("228 189 160 230 152 175 32 103 97 121 44 229 133 132 229 188 159 10")
+            print("無法讀取影像，請確認攝影機")
             break
 
         frame_count += 1 # 幀數往上加，等等會呼叫 update_fps
@@ -112,6 +122,8 @@ def main():
         if frame_count % 3 == 0:
             # 偵測可疑對象
             suspects = detect(frame) # detect 函數會執行所有臉部偵測、追蹤、特徵計算和睡眠判斷邏輯，在 _detector.py
+            if suspects !=[]:
+                print("[DEBUG] detect() 偵測結果:", suspects)
 
             # 傳送 JSON 檔案
             if suspects or previous_suspects_ids:
@@ -124,7 +136,7 @@ def main():
             now = time.time()
             for s in suspects: # face_id 是鍵
                 recent_suspects[s['face_id']] = (s['bbox'], now) # 持續刷新同一張臉(或同 id 每次的紀錄時間)
-
+                
 
         # 清除過期紅框
         now = time.time()
@@ -148,8 +160,9 @@ def main():
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2) 
           # cv2.rectangle(影像, 左上角座標, 右下角座標, 顏色BGR, 線條粗細)
 
+            display_name = display_id.get(face_id, f"face_{face_id}")
             # 寫字                     split = 切開(這裡用_)
-            cv2.putText(frame, face_id.split('_')[0], (x, y - 10), # [0] 是指前面的 lost or face (check_lost_faces)
+            cv2.putText(frame, display_name.split('_')[0], (x, y - 10), # [0] 是指前面的 lost or face (check_lost_faces)
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             #cv2.putText(影像, 要繪製的文字, 文字的左下角起始座標, 字型, 字型大小的比例, 顏色, 線條粗細)
             # 我們目前賦予給他的 id 是根據 xy 座標
@@ -158,7 +171,7 @@ def main():
         cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-        cv2.imshow('可疑對象', frame)
+        cv2.imshow('Suspicious_people', frame)
         if cv2.waitKey(1) & 0xFF == ord('e'):
             break
 
