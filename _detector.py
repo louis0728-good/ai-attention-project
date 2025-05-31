@@ -11,14 +11,21 @@ import collections
 
 # 載入設定
 config_path = os.path.join(os.path.dirname(__file__), 'conditions.json')
-with open(config_path, 'r') as temp:
-    config=json.load(temp)
+try:
+    with open(config_path, 'r') as temp:
+        config=json.load(temp)
+except FileNotFoundError:
+    print(f"找不到設定檔案：{config_path}")
+    config = {}
+except json.JSONDecodeError as e:
+    print(f"JSON 格式錯誤：{e}")
+    config = {}
 # 以上，從現在開始我的json叫做config，以後我們都用這個名字做讀取
 
 # 設定闊值(以防萬一我們json忘了設定)
 # threshold = 臨界點 = thresh(縮寫)
 
-EAR_THRESHOLD       = config.get('ear_threshold', 0.23) # 眼睛縱橫
+EAR_THRESHOLD       = config.get('ear_threshold', 0.15) # 眼睛縱橫
 PITCH_THRESHOLD     = config.get('pitch_threshold', 4) # 仰角
 MIN_FACE_WIDTH      = config.get('min_face_width', 50) # 臉寬
 MAX_FACES           = config.get('max_faces', 5) # 最大臉部(以免抓到太遠的目標，導致系統混亂判斷)
@@ -61,6 +68,9 @@ confirmed_sleep_status = {}
 # 布林值，當我們透過sleep_transition_counter確定已經睡著了
 sleep_suspects_buffer = {}     # 暫存等待確認的可疑對象
 
+sleepy_ID = 1  # 睡覺人編號變數
+
+score=0
 
 # 初始化 MediaPipe
 mp_face_mesh = mp.solutions.face_mesh
@@ -391,8 +401,10 @@ def detect(frame): #每幀每幀處理
             # 如果沒有找到任何匹配的舊 face_id (表示這是一張新出現的臉)  [0] = x座標, [1] = y座標
             # (這邊你把 id 編號改更直觀，我累了)
             #                不用把這理想太複雜，其實就是他們的 size 相加，確實很沒意義，但反正先這樣，你來優化
-            face_id = f"face_{len(face_tracking) + len(used_ids)}_{detected_face['center'][0]}_{detected_face['center'][1]}"
+            sleepy_ID = len(new_face_tracking) + 1 # 新臉的 ID 編號，從 1 開始
+            face_id = f"睡覺人_{sleepy_ID}"
             new_face_tracking[face_id] = {'bbox': detected_bbox, 'last_seen': time.time()}
+             # 每次偵測到新臉就增加一個 ID 編號，這樣每個新臉都有唯一的 ID
     
     # 更新追蹤資料
     face_tracking.clear() # 先將儲存著上一幀的舊數據清空
@@ -448,7 +460,7 @@ def detect(frame): #每幀每幀處理
         # std() = 算標準差
         x_std = np.std(valid_xs) if valid_xs else 0 
         y_std = np.std(valid_ys) if valid_ys else 0
-        too_scattered = (x_std > 0.15) or (y_std > 0.15) # 這些關鍵點太分散，不像一張正常的臉，可能誤把衣服或背景當成臉
+        too_scattered = (x_std > 0.5) or (y_std > 0.5) # 這些關鍵點太分散，不像一張正常的臉，可能誤把衣服或背景當成臉
         
         # 計算眼睛縱橫比
         ear = compute_ear(lm.landmark, w, h)
