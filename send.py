@@ -24,13 +24,12 @@ fps = 0 # 計算得到的 FPS 值
 face_id = f"face_{len(face_tracking) + len(used_ids)}_{detected_face['center'][0]}_{detected_face['center'][1]}"
 """
 
-# 用來記錄每個人目前的 display_id
 display_id = {}
-next_display_id = {} # 未來的 display_id
+next_display_id = 1 # 未來的 display_id
 
 def send(suspects):
     """將 suspects 寫入 JSON，僅在列表有變化時觸發"""
-    global previous_suspects_ids, last_send_time # 因為要修改所以要宣告 global
+    global previous_suspects_ids, last_send_time, display_id, next_display_id # 因為要修改所以要宣告 global
 
     current_time = time.time()
     current_suspects_ids = {s['face_id'] for s in suspects} 
@@ -62,6 +61,17 @@ def send(suspects):
         # 如果有新增的可疑對象
         if new_suspects: 
             print(f"[{now_str}] [send] 新增可疑對象: {', '.join(new_suspects)}")
+            
+            for face_id in new_suspects:
+                if face_id not in display_id: # 確保沒有重複用到同一個id
+                    """
+                    映射 內部id -> 顯示 id 會變麻煩是因為我發現中文字無法輸出在視窗畫面裡
+                    所以我打算 debug輸出仍然保留 睡覺人_i，但是影像則是叫做 sleeper_i
+                    """
+                    display_name = f"ID {next_display_id}"
+                    display_id[face_id] = display_name
+                    next_display_id +=1
+                    # 這邊有點繞但就是單純 map的意思，{'睡覺人_1': 'ID 1'} {face_id, display_name}
         
         # 如果有被移除的對象
         if removed_suspects:
@@ -87,17 +97,28 @@ def update_fps():
         frame_count = 0 # 重置影格計數器 frame_count 為 0，為下一個計算週期做準備
         fps_start_time = time.time() # 重置 fps_start_time 為當前時間
 
-def GaussianAndEq(image, ksize=(5, 5), sigmaX=0):
-    """對影像進行高斯模糊處理"""
-    G=cv2.GaussianBlur(image, ksize, sigmaX)
-    yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
-    yuv[:, :, 0] = cv2.equalizeHist(yuv[:, :, 0]) # 對 Y 通道進行直方圖均衡化
-    G=cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR) # 將均衡化後的影像轉回 BGR 色彩空間
-    return G # 返回處理後的影像
+def Gaypei(img):
+    """ 對影像作高斯和直方圖均衡化"""
+
+    yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV) # 轉換到 YUV 模型
+    """
+    Y: 調整影像明亮程度，也就是灰階
+    U, V: 色度，也就是影像顏色資訊
+    我們這裡指針對亮度，因為我們要做均衡化 
+    """
+    yuv[:, :, 0] = cv2.equalizeHist(yuv[:, :, 0])
+    # 如果影像太暗它會提升亮度
+    # 我們只有針對 Y 去做改變，剩下的 UV 都不改顏色
+
+    G = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR) # 把它轉回BGR
+
+    return G
+
+    
 
 def main():
-    global frame_count, recent_suspects
-    cap = cv2.VideoCapture("1.mp4")
+    global frame_count, recent_suspects, display_id
+    cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("無法開啟攝影機")
         return
@@ -109,11 +130,11 @@ def main():
         got_damm, frame = cap.read() 
         # got_damm : 有 True，搖頭 False
         # frame : 影像
-        if frame is not None:
-            frame = GaussianAndEq(frame)
         if not got_damm:
-            print("無法讀取影像，請確認攝影機")
+            print("228 189 160 230 152 175 32 103 97 121 44 229 133 132 229 188 159 10")
             break
+
+        frame = Gaypei(frame)
 
         frame_count += 1 # 幀數往上加，等等會呼叫 update_fps
         update_fps()
@@ -122,8 +143,6 @@ def main():
         if frame_count % 3 == 0:
             # 偵測可疑對象
             suspects = detect(frame) # detect 函數會執行所有臉部偵測、追蹤、特徵計算和睡眠判斷邏輯，在 _detector.py
-            if suspects !=[]:
-                print("[DEBUG] detect() 偵測結果:", suspects)
 
             # 傳送 JSON 檔案
             if suspects or previous_suspects_ids:
@@ -136,7 +155,7 @@ def main():
             now = time.time()
             for s in suspects: # face_id 是鍵
                 recent_suspects[s['face_id']] = (s['bbox'], now) # 持續刷新同一張臉(或同 id 每次的紀錄時間)
-                
+
 
         # 清除過期紅框
         now = time.time()
@@ -152,6 +171,10 @@ def main():
             del recent_suspects[face_id] 
             # 我們先收集所有要刪除的鍵 (expired)，然後再單獨遍歷這個鍵列表進行刪除，直接修改怕有問題
 
+            if face_id in display_id:
+                print(f"[ID] 清除ID '{face_id}' -> '{display_id[face_id]}'")
+                del display_id[face_id]
+
         # 畫紅框
         for face_id, (bbox, _) in recent_suspects.items():
             x, y, w, h = bbox
@@ -160,10 +183,10 @@ def main():
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2) 
           # cv2.rectangle(影像, 左上角座標, 右下角座標, 顏色BGR, 線條粗細)
 
-            display_name = display_id.get(face_id, f"face_{face_id}")
             # 寫字                     split = 切開(這裡用_)
-            cv2.putText(frame, display_name.split('_')[0], (x, y - 10), # [0] 是指前面的 lost or face (check_lost_faces)
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            display_name = display_id.get(face_id, "Who R u")
+            cv2.putText(frame, display_name, (x, y - 10), # [0] 是指前面的 lost or face (check_lost_faces)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             #cv2.putText(影像, 要繪製的文字, 文字的左下角起始座標, 字型, 字型大小的比例, 顏色, 線條粗細)
             # 我們目前賦予給他的 id 是根據 xy 座標
 
@@ -171,7 +194,7 @@ def main():
         cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-        cv2.imshow('Suspicious_people', frame)
+        cv2.imshow('可疑對象', frame)
         if cv2.waitKey(1) & 0xFF == ord('e'):
             break
 
