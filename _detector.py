@@ -37,14 +37,6 @@ AWAKE_STABILITY_THRESHOLD = config.get('awake_stability_threshold', 5.0)  # 清�
 MIN_SLEEP_DURATION = config.get('min_sleep_duration', 3.0)  # 最小睡眠報告時間（秒）
 
 
-# 狀態追蹤
-face_detected_buffer = collections.deque(maxlen=BUFFER_SIZE)
-"""
-設定雙端的queue，因為我們需要利用前一幀去判斷
-用來記錄最近的 BUFFER_SIZE=12 幀中是否有偵測到任何臉部
-每一幀的結果（1 代表有臉部，0 代表沒有）會被加到這個佇列中
-"""
-
 # 以下空字串的鍵都是 face_id
 sleep_counters = {} 
 # 計算一個人連續多少幀在睡覺，當計數達到 SLEEP_FRAME_THRESH 時，可能會觸發初步的睡眠判斷
@@ -52,7 +44,6 @@ prev_sleep_status = {} # 布林值 (上幀睡覺 / 清醒)
 face_tracking = {} 
 # 當偵測到多個臉部時需要根據 face_id 識別誰是誰，而不是每次都當成新的臉
 pose_tracking = {}  # 追蹤身體關鍵點 (頭與手)
-sleep_entry_time = {}  # 紀錄睡覺時間
 eye_open_counters = {}         # 睜眼幀數
 eye_closed_start_time = {}     # 閉眼開始時間點
 sleep_transition_counter = {}  
@@ -85,7 +76,7 @@ pose = mp_pose.Pose( #姿勢
 # 索引
 POSE_IDX = {
     'nose_tip': 1,
-    'chin': 152,
+    'chin': 152, # 下巴
     'left_eye_outer': 263,
     'right_eye_outer': 33,
     'mouth_left': 287,
@@ -202,14 +193,7 @@ def estimate_head_pose(landmarks, w, h):
             (landmarks[POSE_IDX[k]].x * w, landmarks[POSE_IDX[k]].y * h)
             for k in POSE_IDX
         ], dtype='double') # 資料型態是 double (dtype = data type)
-        """
-        先跟你解釋為何我們這裡不像剛剛多檢查關鍵點是否 >=0 <=1。
-        因為我們現在檢查的是鼻子嘴巴等等，相對眼睛會更大更好辨識。
-        再來，我們現在做的事情有點像是構築出一個 3D 臉部模型，如果只是因為一兩個點錯誤其實還好
-        但如果很多點位置都是亂的然後 mp 還硬抓，就會觸發 except。所以我們才用try... except...
-        """
-        focal_length = w # 假設焦距等於影像寬度，我知道不準確
-                         # 目前先這樣，你可以考慮改用「相機校準」，不過那部份我不懂
+        focal_length = w # 假設焦距等於影像寬度，雖然這樣應該不準只是我偷懶
         center = (w / 2, h / 2) # 光中心點假設正中央
         camera_matrix = np.array([
             [focal_length, 0, center[0]], # [0] 光心 x 座標
@@ -220,7 +204,7 @@ def estimate_head_pose(landmarks, w, h):
 
         dist_coeffs = np.zeros((4, 1)) # 4行1列的全0陣列
         # 相機鏡頭是由多個曲面鏡片組成的，這些鏡片在折射光線時並不完美，會導致光學畸變。
-        # 這裡設為 0 ，因為我沒有進行相機校準，所以我假設沒有畸變，你可以去改
+        # 這裡設為 0 ，因為我沒有進行相機校準，所以我假設沒有畸變
         _, rot_vec, __ = cv2.solvePnP(MODEL_POINTS, image_points, 
                                                     camera_matrix, dist_coeffs)
     #   _ : 計算成功與否 ; rot_vec : 旋轉向量 ; __ : 物體對攝影機的相對位置
@@ -235,7 +219,7 @@ def estimate_head_pose(landmarks, w, h):
         # 將 旋轉向量 改成 3X3 矩陣，後續只要乘上 旋轉矩陣 就可以做幾何變換和角度提取
         # ___ : 雅可比矩陣，因為看起來很難而且也們用到，所以 skip
         # rmat = rotation matrix 旋轉矩陣
-        pitch = math.degrees(math.atan2(rmat[2,1], rmat[2,2]))
+        pitch = math.degrees(math.atan2(rmat[2,1], rmat[2,2])) # atan2(y, x)
         yaw = math.degrees(math.atan2(rmat[1,0], rmat[0,0]))
         roll = math.degrees(math.atan2(rmat[2,0], rmat[2,2]))
         # atan2 = 反正切值，得到一個角度。利用各自的正負號來計算角度和決定象限
@@ -267,7 +251,7 @@ def check_lost_faces(_, suspects):
         #       data['last_seen']: 上一次偵測到這個臉部的時間戳
         #       data['bbox']: 這個臉部最後出現時的邊界框 (x, y, 寬, 高)
 
-        if current_time - data['last_seen'] > 10:  # 10秒內未見，視為丟失
+        if current_time - data['last_seen'] > 5:  # 5 秒內未見，視為丟失
 
             # prev_sleep_status 是一個全域字典，儲存了每個 face_id 先前的睡眠狀態 (True/False)
             if prev_sleep_status.get(face_id, False): 
@@ -291,7 +275,6 @@ def check_lost_faces(_, suspects):
         sleep_counters.pop(key, None) 
         prev_sleep_status.pop(key, None) 
         pose_tracking.pop(key, None)  
-        sleep_entry_time.pop(key, None) 
         eye_open_counters.pop(key, None)
         eye_closed_start_time.pop(key, None)
         sleep_transition_counter.pop(key, None)
@@ -312,8 +295,6 @@ def detect(frame): #每幀每幀處理
     face_present = bool(face_results.multi_face_landmarks)
     # face_results.multi_face_landmarks 是一個列表，如果沒有偵測到臉，它會是 None 或空列表
     # bool : None 或空列表轉換為 False，有內容的列表轉換為 True
-    face_detected_buffer.append(1 if face_present else 0)
-    #如果當前幀有臉部，則向緩衝區添加 1；否則添加 0(後來檢查發現這部份根本沒用到，因為系統已經修正的更穩定了)
 
     # 如果當前幀完全沒有偵測到臉部，提前結束
     if not face_present:
@@ -373,7 +354,7 @@ def detect(frame): #每幀每幀處理
         # face_tracking 此時儲存的是上一幀的追蹤結果
         for tracked_id, tracked_data in face_tracking.items():
             # tracked_id: 上一幀某張臉的 face_id
-            # tracked_data: 包含該臉上一幀的資訊
+            # tracked_data: 包含該臉上一幀的資訊 bbox 和 time
 
             # 計算當前偵測到的臉的 bbox 與某個已追蹤臉的舊 bbox 之間的 IoU
             iou = compute_iou(detected_bbox, tracked_data['bbox'])
@@ -385,7 +366,8 @@ def detect(frame): #每幀每幀處理
                 best_match_id = tracked_id
         
         if best_match_id:  # 如果不為 None (表示追蹤到之前的一張臉)
-            new_face_tracking[best_match_id] = {'bbox': detected_bbox, 'last_seen': time.time()} #同一 id 但更新時間和框框
+            new_face_tracking[best_match_id] = {'bbox': detected_bbox, 'last_seen': time.time()} 
+            #同一 id 但更新時間和框框
             face_id = best_match_id
             used_ids.add(best_match_id) # 將這個 best_match_id 加入 used_ids，表示這 id 在本幀已被使用
         else:
@@ -422,20 +404,8 @@ def detect(frame): #每幀每幀處理
             #       與某個已追蹤臉 (face_id) 的中心點 (tcx, tcy) 非常接近，那就當同一個
             if abs(center_x - tcx) < 20 and abs(center_y - tcy) < 20:
                 break
-        else:
-            # 應該不會發生，但為了程式安全性
-            face_id = f"face_{face_idx}_{center_x}_{center_y}"
-        
-        # 計算超出邊界的關鍵點比例
-        # 遍歷這張臉的所有關鍵點 (lm.landmark)
-        outside_ratio = sum(1 for i in lm.landmark if not (0 <= i.x <= 1 and 0 <= i.y <= 1)) / len(lm.landmark)
-        #                                           會計算出「不在」有效範圍內的關鍵點數量   除以總關鍵點數量 (len(lm.landmark))，得到超出邊界的「比例」
-        """
-        這裡之所以要檢查[0, 1]，是因為如果我們在計算標準差時，把這些極端的、無效的座標值也包含進去
-        那麼計算出來的標準差就會被這些離群值嚴重扭曲，變得非常大。
-        """
-        too_small = face_w < MIN_FACE_WIDTH #臉太小代表太遠，就不要了
-        too_outside = outside_ratio >= 0.5 #代表臉有一半以上都在畫面外或找不到關鍵點，也不要
+
+        too_small = face_w < MIN_FACE_WIDTH # 若是臉部小於我們所訂定的標準，代表有可能因為在睡覺而低頭或遮住臉部
         
         # landmark 集中度過濾 - 判斷臉部形狀是否異常分散
         # 只收集「正常可靠的座標 (0 | 1)」
@@ -457,17 +427,17 @@ def detect(frame): #每幀每幀處理
         # 動態調整 EAR 閾值（根據頭部是否側臉，側臉時適度放寬）
         current_ear_threshold = EAR_THRESHOLD # 首先，使用預設的 EAR_THRESHOLD
         if abs(yaw) > 30 or abs(roll) > 20:
-            # abs(yaw) > 30: 偏航角 (左右搖頭) 的絕對值是否超過30度 (你可以再自己調)
-            # abs(roll) > 20: 翻滾角 (左右歪頭) 的絕對值是否超過20度 (你可以再自己調)
+            # abs(yaw) > 30: 偏航角 (左右搖頭) 的絕對值是否超過30度
+            # abs(roll) > 20: 翻滾角 (左右歪頭) 的絕對值是否超過20度
 
             """ <<透視收縮原理>>
-            如果頭部確實有明顯的側轉或歪斜，我們適度「降低」EAR的判斷閾值 (乘以0.8使其變小)。
-            理由是：當人側臉或歪頭時，從攝影機角度觀察到的眼睛縫隙即使在睜開狀態下，其計算出的EAR值也可能會比正臉時自然偏小。
+            如果頭部確實有明顯的側轉或歪斜，我們適度「降低」EAR的判斷閾值 (乘以0.8讓他變小)。
+            理由是：當人側臉或歪頭時，從攝影機角度觀察到的眼睛縫隙在睜開狀態下，其計算出的EAR值也可能會比正臉時自然偏小。
             如果不調整閾值，這種情況下正常的睜眼可能會因為EAR偏小而被誤判為閉眼。
             所以，降低閾值是為了在這種情況下，需要眼睛閉合得更徹底 (EAR值更小)，才將其判斷為 eye_closed，
             從而減少因姿態引起的誤判。這使得對「閉眼」的判斷在側臉時變得「更嚴格」。
             """
-            current_ear_threshold *= 0.8 # (你可以再自己調，選你覺得最準的)
+            current_ear_threshold *= 0.8
         
         eye_closed = ear < current_ear_threshold # 判斷眼睛是否閉合
         head_down = pitch > PITCH_THRESHOLD # 通常，pitch 為正表示低頭。
@@ -560,7 +530,6 @@ def detect(frame): #每幀每幀處理
                 1. 連續成為 sleep_candidate 的幀數 (curr_count) 必須達到 SLEEP_FRAME_THRESH。
 
                 2. 並且，眼睛實際閉合的總時長 (eye_closed_duration) 必須達到至少5秒
-                  (這個 5.0 你可以改)。
                   這個額外的5秒閉眼時長要求，是為了過濾掉那些雖然持續了一段時間
                   保持了像睡覺的姿態 (滿足了curr_count)，但可能只是長時間眨眼、
                   揉眼睛或其他短暫閉眼的情況，而不是真正的開始進入睡眠。
@@ -580,14 +549,10 @@ def detect(frame): #每幀每幀處理
         # 檢查當前狀態 curr_flag 是否與上一次記錄的狀態 last_record['last_state'] 發生了變化
         if curr_flag != last_record['last_state']: # 如果從清醒變睡眠，或從睡眠變清醒
             sleep_transition_counter[face_id] = {'last_state': curr_flag, 'start_time': now}
-        else:
-            duration = now - last_record['start_time'] # 計算當前這個相同的狀態已經持續了多久
-            required = SLEEP_STABILITY_THRESHOLD if curr_flag else AWAKE_STABILITY_THRESHOLD
 
         # 真正的狀態轉換判斷與觸發
         if curr_flag: # 如果當前幀判斷是睡眠 (curr_flag is True)
-            sleep_entry_time[face_id] = now # 更新時間
-            sleep_duration = now - eye_closed_start_time.get(face_id, now) # # 計算總閉眼時長
+            sleep_duration = now - eye_closed_start_time.get(face_id, now) # 計算總閉眼時長
 
             if sleep_duration >= MIN_SLEEP_DURATION: # 如果總閉眼時長也達標
                 suspects.append({
@@ -596,7 +561,6 @@ def detect(frame): #每幀每幀處理
                     'timestamp': now,
                     'reason': '穩定睡眠確認'
                 })
-                #print(f"[DEBUG] 穩定睡眠確認 -> {face_id} (持續 {sleep_duration:.1f} 秒)")
         
         # 更新狀態
         prev_sleep_status[face_id] = curr_flag # 將當前幀的 curr_flag 存為下一幀的 prev_flag
@@ -609,7 +573,6 @@ def detect(frame): #每幀每幀處理
                   f"pitch={pitch:.1f} (低頭={head_down}) "
                   f"y_pos={y_position_ratio:.2f} (極低頭={extreme_low_head}) "
                   f"臉部大小={face_w}x{face_h} (太小={too_small}) "
-                  f"outside={outside_ratio:.2f} (太外={too_outside}) "
                   f"primary={primary} secondary={secondary} tertiary={tertiary} "
                   f"quaternary={quaternary} 計數={curr_count}/{SLEEP_FRAME_THRESH}")
     
