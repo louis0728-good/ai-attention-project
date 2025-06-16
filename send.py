@@ -8,7 +8,7 @@ from _detector import detect
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'output') # 設定一個名為 output 的子目錄，用來存放程式輸出的檔
 #                                         獲取當前腳本檔案所在的目錄路徑
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'suspects_current.json') # 最終輸出的 JSON 檔案路徑
-DISPLAY_DURATION = 3.0  # 紅框顯示秒數
+DISPLAY_DURATION = 1.0  # 紅框顯示秒數
 SEND_INTERVAL = 1.0     # 最短發送間隔（秒）
 
 previous_suspects_ids = set() # 用來儲存suspects 列表中的所有 face_id
@@ -19,10 +19,6 @@ frame_count = 0 # 影格計數器
 fps_start_time = time.time() # FPS (每秒影格數) 起始時間點
 fps = 0 # 計算得到的 FPS 值
 
-""" 這部分你來，目前輸出 id 很簡單。我要改輸出 id 像 " 睡覺人 i ", i = 1, 2, 3...
-前面第 394 行就已經開始記錄 id 了
-face_id = f"face_{len(face_tracking) + len(used_ids)}_{detected_face['center'][0]}_{detected_face['center'][1]}"
-"""
 
 display_id = {}
 next_display_id = 1 # 未來的 display_id
@@ -131,7 +127,7 @@ def main():
         # got_damm : 有 True，搖頭 False
         # frame : 影像
         if not got_damm:
-            print("228 189 160 230 152 175 32 103 97 121 44 229 133 132 229 188 159 10")
+            print("唉呦")
             break
 
         frame = Gaypei(frame)
